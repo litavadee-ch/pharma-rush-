@@ -561,13 +561,19 @@
   .fb-field input:focus{border-color:#6c48d6;box-shadow:0 0 0 3px rgba(108,72,214,0.18);}
   /* ── PLAYER VIEW ── */
   #playerView{
-    position:fixed;inset:0;z-index:9000;background:#e8eaed;
+    position:fixed;inset:0;z-index:9500;background:#e8eaed;
     display:flex;flex-direction:column;align-items:center;justify-content:center;
     padding:20px;gap:16px;font-family:'Sarabun',sans-serif;
+    overflow-y:auto;pointer-events:auto;
+  }
+  #playerView button{
+    pointer-events:auto !important;
+    -webkit-tap-highlight-color:rgba(0,0,0,0.1);
   }
   .player-q-box{
     background:#f0f2f5;border-radius:16px;padding:20px;width:100%;max-width:600px;
     border:1px solid rgba(0,0,0,0.08);box-shadow:0 4px 16px rgba(0,0,0,0.08);
+    overflow-y:auto;
   }
 
   /* ===== ROLE SELECT / LOBBY / STUDENT VIEW ===== */
@@ -1303,7 +1309,15 @@ function startPlayerMode(){
       if(d.scores) scores = d.scores;
       if(d.groupAnswers) groupAnswers = d.groupAnswers;
       if(d.groupAnswerTimes) groupAnswerTimes = d.groupAnswerTimes;
+      const prevSlide = current;
       if(d.current !== undefined) current = d.current;
+      // Set questionOpenTime on player when slide changes to question
+      const slide = SLIDES[current];
+      if(slide && slide.type === 'question' && current !== prevSlide){
+        questionOpenTime = Date.now();
+      } else if(slide && slide.type !== 'question'){
+        questionOpenTime = null;
+      }
       renderPlayerView();
     });
   }
@@ -1376,18 +1390,26 @@ function renderPlayerView(){
         <div style="display:flex;flex-direction:column;gap:10px;">
           ${q.choices.map((c,i)=>{
             const isPicked = alreadyPicked === i;
-            return `<button onclick="playerSubmitAnswer(${gi},${si},${qi},${i})"
+            const locked = alreadyPicked !== null;
+            return `<button
+              ${!locked ? `onclick="playerSubmitAnswer(${gi},${si},${qi},${i})"` : ''}
               style="display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:12px;
-              border:2px solid ${isPicked?CHOICE_COLORS[i]:'rgba(0,0,0,0.1)'};
-              background:${isPicked?'color-mix(in srgb,'+CHOICE_COLORS[i]+' 20%,white)':'#fff'};
-              color:#1a1f36;font-family:'Sarabun',sans-serif;font-size:16px;font-weight:${isPicked?'700':'400'};
-              text-align:left;cursor:${alreadyPicked!==null?'not-allowed':'pointer'};">
-              <div style="width:36px;height:36px;border-radius:8px;background:${CHOICE_COLORS[i]};
+              border:2px solid ${isPicked?CHOICE_COLORS[i]:locked?'rgba(0,0,0,0.06)':'rgba(0,0,0,0.12)'};
+              background:${isPicked?'color-mix(in srgb,'+CHOICE_COLORS[i]+' 18%,white)':locked?'rgba(0,0,0,0.03)':'#fff'};
+              color:${locked&&!isPicked?'#aaa':'#1a1f36'};
+              font-family:'Sarabun',sans-serif;font-size:16px;font-weight:${isPicked?'700':'400'};
+              text-align:left;cursor:${locked?'default':'pointer'};
+              opacity:${locked&&!isPicked?'0.5':'1'};
+              pointer-events:${locked?'none':'auto'};
+              border:none;width:100%;
+              transition:background 0.15s ease, transform 0.1s ease;">
+              <div style="width:36px;height:36px;border-radius:8px;
+                background:${locked&&!isPicked?'#ccc':CHOICE_COLORS[i]};
                 display:flex;align-items:center;justify-content:center;color:#000;font-weight:800;flex-shrink:0;">
                 ${LETTERS[i]}
               </div>
-              <span>${c}</span>
-              ${isPicked?'<span style="margin-left:auto;font-size:20px;">✅</span>':''}
+              <span style="flex:1;text-align:left;">${c}</span>
+              ${isPicked?'<span style="font-size:20px;">✅</span>':''}
             </button>`;
           }).join('')}
         </div>
@@ -1414,14 +1436,24 @@ function renderPlayerView(){
 function playerSubmitAnswer(gi, si, qi, choice){
   if(groupAnswers[gi]?.[si]?.[qi] !== null) return; // locked
   const elapsed = questionOpenTime !== null ? Date.now() - questionOpenTime : null;
+  // Optimistic update immediately (so button shows as picked right away)
+  groupAnswers[gi][si][qi] = choice;
+  if(elapsed !== null) groupAnswerTimes[gi][si][qi] = elapsed;
+  renderPlayerView(); // show picked state immediately
   // Send to Firebase
   if(fbDb && appMode==='player'){
     const key = `${gi}_${si}_${qi}`;
     fbRef('answers/'+key).set({gi, si, qi, choice, elapsed, ts:Date.now()})
-      .then(()=>{ receiveGroupAnswer(gi,si,qi,choice,false,elapsed); renderPlayerView(); })
-      .catch(e=>{ console.error(e); });
+      .catch(e=>{
+        console.error('Firebase answer error:', e);
+        // Rollback optimistic update on error
+        groupAnswers[gi][si][qi] = null;
+        if(elapsed !== null) groupAnswerTimes[gi][si][qi] = null;
+        renderPlayerView();
+      });
   } else {
-    receiveGroupAnswer(gi, si, qi, choice, false, elapsed);
+    // local/host mode — already updated above, also broadcast
+    receiveGroupAnswer(gi, si, qi, choice, true, elapsed);
   }
 }
 
